@@ -162,8 +162,8 @@ Everything is controlled by that one `.env` file:
 
 | Piece | Image | Reachable on your machine |
 | --- | --- | --- |
-| Frontend (the website) | `ghcr.io/w-efms/efms-frontend` | port 3000 |
-| Backend (the engine) | `ghcr.io/w-efms/efms-backend` | port 8080 |
+| Frontend (the website) | `yonyc/efms-frontend` | port 3000 |
+| Backend (the engine) | `yonyc/efms-backend` | port 8080 |
 | Database | `postgis/postgis:15-3.3` | internal only, not exposed |
 
 The database is deliberately kept inside Docker's private network and is not opened up on the machine, so nothing outside can reach it directly. The backend talks to it over that private network.
