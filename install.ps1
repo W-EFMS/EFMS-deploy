@@ -173,24 +173,76 @@ Say "up"
 docker compose up -d
 if ($LASTEXITCODE -ne 0) { Die "compose up failed, check 'docker compose logs'" }
 
-Say "waiting for backend to be ready..."
-for ($i = 0; $i -lt 60; $i++) {
-    try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$backendPort/actuator/health" -UseBasicParsing -ErrorAction Stop
-        if ($resp.Content -match '"status"\s*:\s*"UP"') { break }
-    } catch {}
-    Start-Sleep -Seconds 2
+Say "waiting for services..."
+$tmpDir = New-Item -ItemType Directory -Path "$env:TEMP\efms-check-$(Get-Random)" -Force | Out-Null
+$tmpDir = "$env:TEMP\efms-check-$(Get-Random)"
+New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+$bFile  = Join-Path $tmpDir "b"
+$fFile  = Join-Path $tmpDir "f"
+
+$job = Start-Job -ScriptBlock {
+    param($fPort, $b, $f)
+    while ($true) {
+        Start-Sleep -Seconds 2
+        if (-not (Test-Path $b)) {
+            $logs = docker logs efms-backend 2>&1
+            if ($logs -match 'Started .+ in .+ seconds') {
+                New-Item -ItemType File -Path $b -Force | Out-Null
+            }
+        }
+        if (-not (Test-Path $f)) {
+            try {
+                $null = Invoke-WebRequest -Uri "http://localhost:$fPort" -UseBasicParsing -ErrorAction Stop
+                New-Item -ItemType File -Path $f -Force | Out-Null
+            } catch {}
+        }
+        if ((Test-Path $b) -and (Test-Path $f)) { break }
+    }
+} -ArgumentList $frontendPort, $bFile, $fFile
+
+$sw  = [System.Diagnostics.Stopwatch]::StartNew()
+$maxMs = 300000
+$esc   = [char]27
+$bOk   = $false
+$fOk   = $false
+$lb    = 1      # cursor lines below timer
+
+Write-Host "     0.000s / 300.000s"
+
+while ($true) {
+    $e   = $sw.ElapsedMilliseconds
+    $s   = [int]($e / 1000)
+    $ms  = $e % 1000
+    $timer = "     {0}.{1:D3}s / 300.000s  " -f $s, $ms
+    Write-Host -NoNewline "$esc[$($lb)A$esc[2K`r$timer$esc[$($lb)B`r"
+
+    if ($e -ge $maxMs) { break }
+
+    if (-not $bOk -and (Test-Path $bFile)) {
+        $bOk = $true
+        Write-Host -NoNewline "$esc[2K`r"
+        Ok ("backend ready after {0}.{1:D3}s" -f $s, $ms)
+        $lb++
+    }
+
+    if (-not $fOk -and (Test-Path $fFile)) {
+        $fOk = $true
+        Write-Host -NoNewline "$esc[2K`r"
+        Ok ("frontend ready after {0}.{1:D3}s" -f $s, $ms)
+        $lb++
+    }
+
+    if ($bOk -and $fOk) { break }
+    Start-Sleep -Milliseconds 50
 }
 
-Say "waiting for frontend to be ready..."
-for ($i = 0; $i -lt 30; $i++) {
-    try {
-        $null = Invoke-WebRequest -Uri "http://localhost:$frontendPort" -UseBasicParsing -ErrorAction Stop
-        break
-    } catch {
-        Start-Sleep -Seconds 2
-    }
-}
+Stop-Job $job | Out-Null
+Remove-Job $job | Out-Null
+Remove-Item -Path $tmpDir -Recurse -Force | Out-Null
+Write-Host ""
+
+if (-not $bOk) { Wn "backend did not start within 300s - run: docker compose logs backend" }
+if (-not $fOk) { Wn "frontend did not start within 300s" }
 
 Say "done"
 docker compose ps

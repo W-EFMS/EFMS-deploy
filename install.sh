@@ -160,22 +160,66 @@ docker compose pull || die "pull failed"
 say "up"
 docker compose up -d || die "compose up failed, check 'docker compose logs'"
 
-say "waiting for backend to be ready..."
-for i in {1..60}; do
-    resp=$(curl -s "http://localhost:${BACKEND_PORT}/actuator/health" 2>/dev/null)
-    if echo "$resp" | grep -q '"status":"UP"'; then
-        break
+say "waiting for services..."
+_t0=$(date +%s%3N)
+_max=300000
+_b=false
+_f=false
+_lb=1
+_tmp=$(mktemp -d)
+_bf="$_tmp/b"
+_ff="$_tmp/f"
+
+printf "     0.000s / 300.000s\n"
+
+# Background subshell: checks services every 2s, writes a flag file when ready
+(
+    while true; do
+        sleep 2
+        [[ ! -f "$_bf" ]] && \
+            docker logs efms-backend 2>&1 | grep -q 'Started.*in.*seconds' && \
+            touch "$_bf"
+        [[ ! -f "$_ff" ]] && \
+            curl -s -f "http://localhost:${FRONTEND_PORT}" >/dev/null 2>&1 && \
+            touch "$_ff"
+        [[ -f "$_bf" && -f "$_ff" ]] && break
+    done
+) &
+_chk=$!
+
+# Display loop: only does cheap flag-file checks, updates every 50ms
+while true; do
+    _now=$(date +%s%3N)
+    _e=$(( _now - _t0 ))
+    _s=$(( _e / 1000 ))
+    _ms=$(( _e % 1000 ))
+    printf "\033[%dA\033[2K\r     %d.%03ds / 300.000s  \033[%dB\r" "$_lb" "$_s" "$_ms" "$_lb"
+    [[ $_e -ge $_max ]] && break
+
+    if ! $_b && [[ -f "$_bf" ]]; then
+        _b=true
+        printf "\033[2K\r"
+        ok "backend ready after ${_s}.$(printf '%03d' "$_ms")s"
+        _lb=$(( _lb + 1 ))
     fi
-    sleep 2
+
+    if ! $_f && [[ -f "$_ff" ]]; then
+        _f=true
+        printf "\033[2K\r"
+        ok "frontend ready after ${_s}.$(printf '%03d' "$_ms")s"
+        _lb=$(( _lb + 1 ))
+    fi
+
+    if $_b && $_f; then break; fi
+    sleep 0.05
 done
 
-say "waiting for frontend to be ready..."
-for i in {1..30}; do
-    if curl -s -f "http://localhost:${FRONTEND_PORT}" > /dev/null; then
-        break
-    fi
-    sleep 2
-done
+kill "$_chk" 2>/dev/null || true
+rm -rf "$_tmp"
+echo
+
+[[ "$_b" == "true" ]] || warn "backend did not start within 300s - run: docker compose logs backend"
+[[ "$_f" == "true" ]] || warn "frontend did not start within 300s"
 
 say "done"
 docker compose ps
